@@ -1,12 +1,24 @@
 #ifndef __SERIALPORT_H
 #define __SERIALPORT_H
 
+#include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
-#include "BaseType.h"
+#ifdef _WIN32
+#include "windows.h"
+#elif __linux__
+
+#elif __APPLE__
+
+#else
+#error "Unsupported platform"
+#endif
 
 class SerialPort {
  public:
@@ -17,36 +29,52 @@ class SerialPort {
     SERIAL_PORT_RX_VALID
   };
 
-  SerialPort(std::function<void(Event)> callback);
+  SerialPort();
   ~SerialPort();
 
   bool isOpen();
   int open();
   int close();
-  int write(const u8* data, u32 data_size, u32 timeout);
-  int read(u8* buffer, u32 buffer_size, u32 timeout);
-
-  u32 getBaudrate(void);
-  int setBaudrate(u32 baudrate);
-  const wchar_t* getPort(void);
-  bool setPort(const wchar_t* portName);
-
+  int write(const uint8_t* data, uint32_t data_size, uint32_t timeout);
+  int read(uint8_t* buffer, uint32_t buffer_size, uint32_t timeout);
+  uint32_t getBaudrate(void);
+  int setBaudrate(uint32_t baudrate);
+  const std::string getPort(void);
+  bool setPort(const std::string portName);
   int setDTR(bool state);
   int setRTS(bool state);
-
   bool setEventCallback(std::function<void(Event)> callback);
-
   int purgeBuffer(void);
   size_t getReadBytes(void);
-  size_t getWriteBytes(void);
-  static bool getSerialList(std::vector<wchar_t*>& serial_list);
-  static long getTickCount(void);
+  static std::vector<std::string> getSerialList(void);
 
  private:
   std::function<void(Event)> m_callback;
   std::string m_port = "";
   uint32_t m_baudrate = 115200;
   std::deque<uint8_t> read_buffer;
+  std::thread* m_thread = nullptr;
+
+  bool m_suspend = false;
+  std::mutex m_mutex;
+  std::condition_variable m_cond;
+  void read_thread(void);
+  bool m_thread_stop = true;
+  void thread_create(void);
+  void thread_destroy(void);
+  void thread_suspend(void);
+  void thread_resume(void);
+
+  void emitEvent(Event event);
+
+#ifdef _WIN32
+  HANDLE m_hCom = NULL, m_hThreadC = NULL;
+  OVERLAPPED ov_write = {0, 0, 0, 0, 0}, ov_read = {0, 0, 0, 0, 0};
+#elif __linux__
+
+#elif __APPLE__
+
+#endif
 };
 
 #endif
