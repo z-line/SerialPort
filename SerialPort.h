@@ -3,7 +3,6 @@
 
 #include <condition_variable>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -22,37 +21,27 @@
 
 class SerialPort {
  public:
-  enum class Event {
-    SERIAL_PORT_ERROR,
-    SERIAL_PORT_TX_EMPTY,
-    SERIAL_PORT_RX_FULL,
-    SERIAL_PORT_RX_VALID
-  };
-
-  SerialPort();
+  SerialPort(std::function<void(uint8_t*, size_t)> callback);
   ~SerialPort();
 
   bool isOpen();
   int open();
   int close();
   int write(const uint8_t* data, uint32_t data_size, uint32_t timeout);
-  int read(uint8_t* buffer, uint32_t buffer_size, uint32_t timeout);
   uint32_t getBaudrate(void);
   int setBaudrate(uint32_t baudrate);
   const std::string getPort(void);
   bool setPort(const std::string portName);
   int setDTR(bool state);
   int setRTS(bool state);
-  bool setEventCallback(std::function<void(Event)> callback);
+  bool setEventCallback(std::function<void(uint8_t*, size_t)> callback);
   int purgeBuffer(void);
-  size_t getReadBytes(void);
   static std::vector<std::string> getSerialList(void);
 
  private:
-  std::function<void(Event)> m_callback;
+  std::function<void(uint8_t*, size_t)> m_callback;
   std::string m_port = "";
   uint32_t m_baudrate = 115200;
-  std::deque<uint8_t> read_buffer;
   std::thread* m_thread = nullptr;
 
   bool m_suspend = false;
@@ -64,8 +53,6 @@ class SerialPort {
   void thread_destroy(void);
   void thread_suspend(void);
   void thread_resume(void);
-
-  void emitEvent(Event event);
 
 #ifdef _WIN32
   HANDLE m_hCom = NULL, m_hThreadC = NULL;

@@ -1,43 +1,42 @@
 #include "SerialPort.h"
 
-#include <chrono>
 #include <cstdio>
+
+#include "Logger.h"
 
 using namespace std;
 
-SerialPort::SerialPort() {}
+SerialPort::SerialPort(std::function<void(uint8_t*, size_t)> callback)
+    : m_callback(callback) {}
 
 SerialPort::~SerialPort(void) {
-  printf("%s", "destructing");
   thread_destroy();
   if (isOpen()) {
     if (close()) {
-      printf("%ws release failed.", m_port);
+      LOG_E() << m_port << " release failed.";
     }
   }
-  printf("%s", "destructed");
 }
 
 bool SerialPort::isOpen() {
-#if defined(Q_OS_WIN)
+#if defined(_WIN32)
   return (m_hCom != nullptr) && (m_hCom != INVALID_HANDLE_VALUE);
-#elif defined(Q_OS_LINUX)
+#elif defined(__linux__)
 
-#elif defined(Q_OS_MACOS)
+#elif defined(__APPLE__)
 
 #endif
 }
 
 int SerialPort::open() {
-  printf("open %ls", m_port);
   if (isOpen()) {
-    printf("%ls has been opened", m_port);
+    LOG_D() << m_port << " has been opened";
     return 0;
   }
   int ret = ERROR_SUCCESS;
 #ifdef _WIN32
   char port[64];
-  if (snprintf(port, sizeof(port), "\\\\.\\%ls", m_port) < 0) {
+  if (snprintf(port, sizeof(port), "\\\\.\\%s", m_port.c_str()) < 0) {
     return -1;
   }
   m_hCom = CreateFile(port, GENERIC_READ | GENERIC_WRITE,
@@ -49,13 +48,13 @@ int SerialPort::open() {
 
   if (m_hCom == INVALID_HANDLE_VALUE || m_hCom == nullptr) {
     ret = GetLastError();
-    printf("CreateFile failed with error %d.", GetLastError());
+    LOG_E() << "CreateFile failed with error " << ret;
     goto end;
   }
   // Set buffer size
   if (!SetupComm(m_hCom, 1024 * 2, 1024 * 2)) {
     ret = GetLastError();
-    printf("SetupComm failed with error %d.", ret);
+    LOG_E() << "SetupComm failed with error " << ret;
     goto end;
   }
   // Set serial communication parameter
@@ -63,7 +62,7 @@ int SerialPort::open() {
   dcb.DCBlength = sizeof(DCB);
   if (!GetCommState(m_hCom, &dcb)) {
     ret = GetLastError();
-    printf("GetCommState failed with error %d.", ret);
+    LOG_E() << "GetCommState failed with error " << ret;
     goto end;
   }
 
@@ -75,7 +74,7 @@ int SerialPort::open() {
   dcb.fRtsControl = RTS_CONTROL_DISABLE;
   if (!SetCommState(m_hCom, &dcb)) {
     ret = GetLastError();
-    printf("SetCommState failed with error %d.", ret);
+    LOG_E() << "SetCommState failed with error " << ret;
     goto end;
   }
   // Set event
@@ -97,14 +96,14 @@ int SerialPort::open() {
   timeouts.WriteTotalTimeoutConstant = 0;
   if (!SetCommTimeouts(m_hCom, &timeouts)) {
     ret = GetLastError();
-    printf("SetCommTimeouts failed with error %d.", ret);
+    LOG_E() << "SetCommTimeouts failed with error " << ret;
     goto end;
   }
   if (m_hThreadC == nullptr || m_hThreadC == INVALID_HANDLE_VALUE) {
     m_hThreadC = CreateEvent(nullptr, true, false, nullptr);
     if (m_hThreadC == nullptr || m_hThreadC == INVALID_HANDLE_VALUE) {
       ret = GetLastError();
-      printf("CreateEvent failed with error %d.", ret);
+      LOG_E() << "CreateEvent failed with error " << ret;
       goto end;
     }
   }
@@ -130,7 +129,7 @@ end:
     } else {
       thread_resume();
     }
-    printf("Serial port %ls init finished.", m_port);
+    LOG_E() << "Serial port " << m_port << " init finished.";
   }
   return ret;
 }
@@ -138,18 +137,17 @@ end:
 int SerialPort::close() {
   int ret = ERROR_SUCCESS;
   if (!isOpen()) {
-    printf("%ls hasn't been opened", m_port);
+    LOG_W() << m_port << "hasn't been opened";
     return 0;
   }
   thread_suspend();
   if (!PurgeComm(m_hCom, PURGE_TXCLEAR | PURGE_TXABORT | PURGE_RXCLEAR |
                              PURGE_RXABORT)) {
-    printf("%s failed:%d", "PurgeComm", GetLastError());
+    LOG_W() << "PurgeComm failed " << GetLastError();
   }
   if (!CancelIo(m_hCom)) {
-    printf("%s failed:%d", "CancelIo", GetLastError());
+    LOG_W() << "CancelIo failed " << GetLastError();
   }
-  read_buffer.clear();
   // if (ov_write.hEvent != nullptr) {
   //   if (CloseHandle(ov_write.hEvent)) {
   //     ov_write.hEvent = nullptr;
@@ -167,20 +165,20 @@ int SerialPort::close() {
   if (m_hCom != nullptr && m_hCom != INVALID_HANDLE_VALUE) {
     if (!CloseHandle(m_hCom)) {
       ret = GetLastError();
-      printf("%ls close failed:%d", m_port, ret);
+      LOG_E() << m_port << "close failed: " << ret;
       goto end;
     } else {
       m_hCom = nullptr;
     }
   } else {
-    printf("%ls has closed ", m_port);
+    LOG_D() << m_port << " has closed";
     return ERROR_SUCCESS;
   }
 end:
   if (ret == ERROR_SUCCESS) {
-    printf("%ls closed", m_port);
+    LOG_D() << m_port << " closed";
   } else {
-    printf("%ls close failed", m_port);
+    LOG_E() << m_port << " close failed";
   }
   return ret;
 }
@@ -215,26 +213,8 @@ get_result:
 error:
   ResetEvent(ov_write.hEvent);
   ret = GetLastError();
-  printf("write error:%d", ret);
-  emitEvent(Event::SERIAL_PORT_ERROR);
+  LOG_E() << "write error: " << ret;
   return -1;
-}
-
-int SerialPort::read(uint8_t* buffer, uint32_t bytes2read, uint32_t timeout) {
-  auto end = chrono::steady_clock::now() + chrono::milliseconds(timeout);
-  uint32_t index = 0;
-  while (index < bytes2read) {
-    if (chrono::steady_clock::now() >= end) {
-      goto end;
-    }
-    if (!read_buffer.empty()) {
-      buffer[index] = read_buffer.front();
-      read_buffer.pop_front();
-      index++;
-    }
-  }
-end:
-  return index;
 }
 
 uint32_t SerialPort::getBaudrate(void) { return m_baudrate; }
@@ -246,19 +226,19 @@ int SerialPort::setBaudrate(uint32_t baudrate) {
     DCB dcb;
     if (!GetCommState(m_hCom, &dcb)) {
       ret = GetLastError();
-      printf("GetCommState failed with error %d.", ret);
+      LOG_E() << "GetCommState failed with error " << ret;
       goto end;
     }
     dcb.BaudRate = m_baudrate;
     if (!SetCommState(m_hCom, &dcb)) {
       ret = GetLastError();
-      printf("SetCommState failed with error %d.", ret);
+      LOG_E() << "SetCommState failed with error " << ret;
       goto end;
     }
   }
 end:
   if (ret == ERROR_SUCCESS) {
-    printf("%ls baudrete change to %d", m_port, m_baudrate);
+    LOG_D() << m_port << " baudrate change to " << baudrate;
   }
   return ret;
 }
@@ -281,10 +261,10 @@ int SerialPort::setDTR(bool state) {
   int ret = ERROR_SUCCESS;
   if (!EscapeCommFunction(m_hCom, state ? SETDTR : CLRDTR)) {
     ret = GetLastError();
-    printf("EscapeCommFunction failed with error %d.", ret);
+    LOG_E() << "EscapeCommFunction failed with error " << ret;
   }
   if (ret == ERROR_SUCCESS) {
-    printf("set DTR %s", state ? "1" : "0");
+    LOG_V() << "set DTR " << (state ? "1" : "0");
   }
   return ret;
 }
@@ -293,15 +273,15 @@ int SerialPort::setRTS(bool state) {
   int ret = ERROR_SUCCESS;
   if (!EscapeCommFunction(m_hCom, state ? SETRTS : CLRRTS)) {
     ret = GetLastError();
-    printf("EscapeCommFunction failed with error %d.", ret);
+    LOG_E() << "EscapeCommFunction failed with error " << ret;
   }
   if (ret == ERROR_SUCCESS) {
-    printf("set RTS %s", state ? "1" : "0");
+    LOG_V() << "set RTS " << (state ? "1" : "0");
   }
   return ret;
 }
 
-bool SerialPort::setEventCallback(function<void(Event)> callback) {
+bool SerialPort::setEventCallback(function<void(uint8_t*, size_t)> callback) {
   m_callback = callback;
   return true;
 }
@@ -310,13 +290,10 @@ int SerialPort::purgeBuffer() {
   int ret = ERROR_SUCCESS;
   if (!PurgeComm(m_hCom, PURGE_RXCLEAR)) {
     ret = GetLastError();
-    printf("PurgeComm failed with error %d.", ret);
+    LOG_E() << "PurgeComm failed with error " << ret;
   }
-  read_buffer.clear();
   return ret;
 }
-
-size_t SerialPort::getReadBytes(void) { return read_buffer.size(); }
 
 vector<string> SerialPort::getSerialList(void) {
   vector<string> serial_list;
@@ -361,7 +338,7 @@ void SerialPort::read_thread(void) {
   while (1) {
     unique_lock<mutex> locker(m_mutex);
     while (m_suspend) {
-      printf("%s", "thread suspended");
+      LOG_D() << "thread suspended";
       ResetEvent(m_hThreadC);
       m_cond.wait(locker);
     }
@@ -380,12 +357,8 @@ void SerialPort::read_thread(void) {
       case WAIT_OBJECT_0:
         ResetEvent(ov_read.hEvent);
         GetOverlappedResult(m_hCom, &ov_read, &read_size, true);
-        for (uint32_t i = 0; i < read_size; i++) {
-          // LOG_V("%02x ", buffer[i]);
-          read_buffer.push_back(buffer[i]);
-        }
-        if (read_buffer.size() != 0) {
-          emitEvent(Event::SERIAL_PORT_RX_VALID);
+        if (read_size > 0) {
+          m_callback(buffer, read_size);
         }
         break;
       case WAIT_OBJECT_0 + 1:
@@ -396,36 +369,36 @@ void SerialPort::read_thread(void) {
           error_line = __LINE__;
           goto error;
         } else {
-          printf("WaitForMultipleObjects ret:%d", ret);
+          LOG_W() << "WaitForMultipleObjects ret: " << ret;
         }
         break;
     }
     continue;
   error:
     ret = GetLastError();
-    printf("read error[Line%d]:%d", error_line, ret);
-    emitEvent(Event::SERIAL_PORT_ERROR);
+    LOG_E() << "read error[Line" << error_line << "]: " << ret;
     close();
   }
 exit:
   if (!CloseHandle(m_hThreadC)) {
-    printf("%s close failed:%d", "m_hThreadC", GetLastError());
+    LOG_W() << "m_hThreadC close failed: " << GetLastError();
   } else {
     m_hThreadC = nullptr;
   }
-  printf("%s", "read thread exited.");
+  LOG_D() << "read thread exited.";
 }
 
 void SerialPort::thread_create(void) {
   if (m_thread != nullptr) {
     thread_destroy();
   }
-  m_thread = new thread(std::bind(SerialPort::read_thread, this), nullptr);
+  m_thread_stop = false;
+  m_thread = new thread(std::bind(&SerialPort::read_thread, this), nullptr);
 }
 
 void SerialPort::thread_destroy(void) {
   if (m_thread != nullptr) {
-    printf("%s", "request destroying thread.");
+    LOG_D() << "request destroying thread.";
     m_thread_stop = true;
     thread_resume();
     m_thread->join();
@@ -439,7 +412,7 @@ void SerialPort::thread_destroy(void) {
 
 void SerialPort::thread_suspend(void) {
   if (m_thread != nullptr) {
-    printf("%s", "m_suspend thread.");
+    LOG_D() << "m_suspend thread.";
     // unique_lock<mutex> locker(m_mutex);
     SetEvent(m_hThreadC);
     m_suspend = true;
@@ -448,16 +421,9 @@ void SerialPort::thread_suspend(void) {
 
 void SerialPort::thread_resume(void) {
   if (m_thread != nullptr) {
-    printf("%s", "resume thread.");
+    LOG_D() << "resume thread.";
     unique_lock<mutex> locker(m_mutex);
     m_suspend = false;
     m_cond.notify_one();
   }
-}
-
-void SerialPort::emitEvent(Event event) {
-  if (event != Event::SERIAL_PORT_RX_VALID) {
-    printf("event %d", event);
-  }
-  m_callback(event);
 }
